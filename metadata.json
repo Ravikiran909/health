@@ -1,0 +1,11 @@
+{
+  "name": "HealthConnect AI",
+  "description": "Rural and semi-urban bilingual (Kannada/English) healthcare access platform featuring voice assistance, hospital/PHC finder, ASHA Saathi dashboard, appointment & referral tracking, offline PWA sync, Gemini AI navigation agent, emergency 108 assistance, and accessibility Access Scorecard.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
