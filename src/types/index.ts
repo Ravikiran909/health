@@ -1,4 +1,21 @@
-export type Language = 'kn' | 'en';
+export type Language = 'en' | 'kn' | 'hi' | 'te' | 'ml' | 'ta';
+
+export interface LanguageConfig {
+  code: Language;
+  name: string;        // Native name (e.g., 'ಕನ್ನಡ', 'हिन्दी')
+  englishName: string; // English name (e.g., 'Kannada', 'Hindi')
+  speechLang: string;  // BCP 47 tag for SpeechRecognition & Synthesis (e.g., 'kn-IN')
+  flag: string;
+}
+
+export const SUPPORTED_LANGUAGES: LanguageConfig[] = [
+  { code: 'en', name: 'English', englishName: 'English', speechLang: 'en-IN', flag: '🇬🇧' },
+  { code: 'kn', name: 'ಕನ್ನಡ', englishName: 'Kannada', speechLang: 'kn-IN', flag: '🇮🇳' },
+  { code: 'hi', name: 'हिन्दी', englishName: 'Hindi', speechLang: 'hi-IN', flag: '🇮🇳' },
+  { code: 'te', name: 'తెలుగు', englishName: 'Telugu', speechLang: 'te-IN', flag: '🇮🇳' },
+  { code: 'ml', name: 'മലയാളം', englishName: 'Malayalam', speechLang: 'ml-IN', flag: '🇮🇳' },
+  { code: 'ta', name: 'தமிழ்', englishName: 'Tamil', speechLang: 'ta-IN', flag: '🇮🇳' },
+];
 
 export type UserRole = 'citizen' | 'asha' | 'doctor' | 'admin';
 
@@ -34,6 +51,61 @@ export interface Facility {
   isSampleData: boolean;
   latitude: number;
   longitude: number;
+}
+
+export interface NearbyHospital {
+  id: string;
+  name: string;
+  kannadaName?: string;
+  hindiName?: string;
+  ownership?: 'GOVERNMENT' | 'PRIVATE';
+  type: string;
+  state?: string;
+  stateCode?: string;
+  district?: string;
+  cityOrTown?: string;
+  address: string;
+  kannadaAddress?: string;
+  pinCode?: string;
+  phone?: string;
+  emergencyPhone?: string;
+  distanceKm?: number;
+  latitude: number;
+  longitude: number;
+  isOpen24x7: boolean;
+  emergencyAvailable: boolean;
+  source: string;
+  verifiedDate?: string;
+  openingHours?: string;
+  bedCount?: number;
+  availableDoctors?: number;
+  specialties?: string[];
+  services?: string[];
+}
+
+export interface HospitalSearchParams {
+  lat?: number;
+  lng?: number;
+  radius?: number;
+  state?: string;
+  district?: string;
+  city?: string;
+  q?: string;
+  ownership?: 'ALL' | 'GOVERNMENT' | 'PRIVATE';
+  type?: string;
+  specialty?: string;
+  open24x7?: boolean;
+  page?: number;
+  limit?: number;
+}
+
+
+export interface UserLocation {
+  latitude: number;
+  longitude: number;
+  accuracyMeters?: number;
+  timestamp: number;
+  addressName?: string;
 }
 
 export interface Patient {

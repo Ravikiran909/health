@@ -9,13 +9,11 @@ import {
   BookOpen,
   PhoneCall,
   Trophy,
-  ShieldCheck,
-  CheckCircle2,
-  HeartPulse,
   Sparkles,
   ArrowRight,
   Activity,
-  Ambulance,
+  Globe,
+  Check,
 } from 'lucide-react';
 
 interface HomeViewProps {
@@ -29,7 +27,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
   onOpenEmergency,
   onNavigateTab,
 }) => {
-  const { language, t } = useLanguage();
+  const { language, setLanguage, t, supportedLanguages } = useLanguage();
   const { currentUser } = useAuth();
 
   const actionCards = [
@@ -38,8 +36,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       icon: MapPin,
       title: t('card_phc_title'),
       desc: t('card_phc_desc'),
-      kannadaBadge: '24/7 ಹೆರಿಗೆ ಕೇಂದ್ರಗಳು',
-      badge: '24/7 Delivery Points',
+      badge: t('card_phc_badge'),
       color: 'from-teal-900/60 to-slate-900',
       borderColor: 'hover:border-teal-500',
       iconColor: 'text-teal-400',
@@ -49,8 +46,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       icon: Calendar,
       title: t('card_book_title'),
       desc: t('card_book_desc'),
-      kannadaBadge: 'ಸರತಿ ರಹಿತ ನೋಂದಣಿ',
-      badge: 'Queue-Free Request',
+      badge: t('card_book_badge'),
       color: 'from-emerald-950/60 to-slate-900',
       borderColor: 'hover:border-emerald-500',
       iconColor: 'text-emerald-400',
@@ -60,8 +56,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       icon: Users,
       title: t('card_asha_title'),
       desc: t('card_asha_desc'),
-      kannadaBadge: 'ಗರ್ಭಿಣಿ & ಲಸಿಕಾ ಟ್ರ್ಯಾಕರ್',
-      badge: 'Maternal & Vaccine Hub',
+      badge: t('card_asha_badge'),
       color: 'from-cyan-950/60 to-slate-900',
       borderColor: 'hover:border-cyan-500',
       iconColor: 'text-cyan-400',
@@ -71,8 +66,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       icon: BookOpen,
       title: t('card_info_title'),
       desc: t('card_info_desc'),
-      kannadaBadge: 'NHM ಅಧಿಕೃತ ಮಾರ್ಗಸೂಚಿ',
-      badge: 'Grounded NHM RAG',
+      badge: t('card_info_badge'),
       color: 'from-sky-950/60 to-slate-900',
       borderColor: 'hover:border-sky-500',
       iconColor: 'text-sky-400',
@@ -82,8 +76,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       icon: Trophy,
       title: t('card_scorecard_title'),
       desc: t('card_scorecard_desc'),
-      kannadaBadge: 'ಹ್ಯಾಕಥಾನ್ ವಿಶೇಷ ⭐',
-      badge: 'Hackathon Innovation ⭐',
+      badge: t('card_scorecard_badge'),
       color: 'from-amber-950/60 to-slate-900',
       borderColor: 'hover:border-amber-500',
       iconColor: 'text-amber-400',
@@ -94,8 +87,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
       icon: PhoneCall,
       title: t('card_emergency_title'),
       desc: t('card_emergency_desc'),
-      kannadaBadge: '1-ಸ್ಪರ್ಶ ನೇರ ಕರೆ',
-      badge: 'Instant 108 Call',
+      badge: t('card_emergency_badge'),
       color: 'from-rose-950/70 to-slate-900',
       borderColor: 'hover:border-rose-500',
       iconColor: 'text-rose-400',
@@ -122,7 +114,36 @@ export const HomeView: React.FC<HomeViewProps> = ({
             {t('hero_description')}
           </p>
 
-          {/* Large Voice Action Button */}
+          {/* 1-Tap Language Quick Switcher Bar for Rural Accessibility */}
+          <div className="mt-6 pt-4 border-t border-teal-900/40">
+            <div className="flex items-center gap-2 text-xs font-bold text-teal-300 mb-2.5">
+              <Globe className="w-3.5 h-3.5 text-teal-400" />
+              <span>{t('select_language')} / Choose Your Mother Tongue:</span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {supportedLanguages.map((lang) => {
+                const isActive = language === lang.code;
+                return (
+                  <button
+                    key={lang.code}
+                    onClick={() => setLanguage(lang.code)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                      isActive
+                        ? 'bg-gradient-to-r from-teal-400 to-emerald-400 text-slate-950 font-black shadow-lg shadow-teal-500/30 ring-2 ring-white/20'
+                        : 'bg-slate-900/80 hover:bg-slate-800 text-slate-200 border border-slate-700/80 hover:border-teal-500'
+                    }`}
+                  >
+                    <span>{lang.flag}</span>
+                    <span>{lang.name}</span>
+                    {isActive && <Check className="w-3.5 h-3.5 text-slate-950" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Large Voice Action Button & Nearest Hospital Discovery */}
           <div className="mt-8 flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
             <button
               onClick={onOpenVoice}
@@ -138,7 +159,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
             <button
               onClick={() => onNavigateTab('facilities')}
-              className="px-6 py-4 rounded-2xl bg-slate-800/90 hover:bg-slate-750 text-white font-bold text-sm sm:text-base border border-slate-700 transition flex items-center justify-center gap-2 cursor-pointer"
+              className="px-6 py-4 rounded-2xl bg-slate-800/90 hover:bg-slate-750 text-white font-bold text-sm sm:text-base border border-slate-700 transition flex items-center justify-center gap-2 cursor-pointer shadow-lg"
             >
               <MapPin className="w-5 h-5 text-teal-400" />
               <span>{t('find_phc_btn')}</span>
@@ -152,9 +173,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
         {/* Ambient background decoration */}
         <div className="absolute -bottom-16 -right-16 w-80 h-80 rounded-full bg-teal-500/10 blur-3xl pointer-events-none" />
-        <div className="absolute top-0 right-0 p-8 opacity-5 pointer-events-none hidden md:block">
-          <HeartPulse className="w-96 h-96 text-white" />
-        </div>
       </section>
 
       {/* Quick Action Navigation Grid */}
@@ -162,12 +180,10 @@ export const HomeView: React.FC<HomeViewProps> = ({
         <div className="flex items-center justify-between px-2">
           <h2 className="text-lg sm:text-xl font-black text-white flex items-center gap-2">
             <Activity className="w-5 h-5 text-teal-400" />
-            <span>
-              {language === 'kn' ? 'ಪ್ರಮುಖ ಆರೋಗ್ಯ ಸೇವೆಗಳು' : 'Core Healthcare Workflows'}
-            </span>
+            <span>{t('core_workflows')}</span>
           </h2>
           <span className="text-xs text-slate-400 font-semibold">
-            {language === 'kn' ? 'ಸ್ಪರ್ಶಿಸಿ ತೆರೆಯಿರಿ' : 'Select to navigate'}
+            {t('select_to_navigate')}
           </span>
         </div>
 
@@ -188,12 +204,14 @@ export const HomeView: React.FC<HomeViewProps> = ({
               >
                 <div>
                   <div className="flex items-center justify-between mb-4">
-                    <div className={`w-12 h-12 rounded-2xl bg-slate-900/80 border border-slate-700/60 flex items-center justify-center ${card.iconColor} group-hover:scale-110 transition-transform shadow-md`}>
+                    <div
+                      className={`w-12 h-12 rounded-2xl bg-slate-900/80 border border-slate-700/60 flex items-center justify-center ${card.iconColor} group-hover:scale-110 transition-transform shadow-md`}
+                    >
                       <Icon className="w-6 h-6" />
                     </div>
 
                     <span className="text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full bg-slate-950/60 text-teal-300 border border-slate-800">
-                      {language === 'kn' ? card.kannadaBadge : card.badge}
+                      {card.badge}
                     </span>
                   </div>
 
@@ -207,7 +225,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
                 </div>
 
                 <div className="mt-5 pt-4 border-t border-slate-800/80 flex items-center justify-between text-xs font-bold text-teal-400 group-hover:text-teal-300">
-                  <span>{language === 'kn' ? 'ಪ್ರವೇಶಿಸಿ' : 'Open Workflow'}</span>
+                  <span>{t('open_workflow')}</span>
                   <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                 </div>
               </div>
@@ -220,30 +238,36 @@ export const HomeView: React.FC<HomeViewProps> = ({
       <section className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 text-center">
           <div>
-            <span className="text-2xl sm:text-3xl font-black text-white">100%</span>
+            <span className="text-2xl sm:text-3xl font-black text-white">6</span>
             <span className="text-xs text-teal-300 block font-semibold mt-1">
-              {language === 'kn' ? 'ಕನ್ನಡ & ಇಂಗ್ಲಿಷ್ ಧ್ವನಿ' : 'Kannada & English Voice'}
+              Indian Languages Active
             </span>
           </div>
 
           <div>
-            <span className="text-2xl sm:text-3xl font-black text-emerald-400">24/7</span>
+            <span className="text-2xl sm:text-3xl font-black text-emerald-400">
+              24/7
+            </span>
             <span className="text-xs text-emerald-300 block font-semibold mt-1">
-              {language === 'kn' ? 'ಸಹಜ ಹೆರಿಗೆ ಸೌಲಭ್ಯ' : 'Normal Delivery PHCs'}
+              {t('card_phc_badge')}
             </span>
           </div>
 
           <div>
-            <span className="text-2xl sm:text-3xl font-black text-amber-400">108</span>
+            <span className="text-2xl sm:text-3xl font-black text-amber-400">
+              108
+            </span>
             <span className="text-xs text-amber-300 block font-semibold mt-1">
-              {language === 'kn' ? 'ಉಚಿತ ಆಂಬುಲೆನ್ಸ್ ಲಿಂಕ್' : 'Free Ambulance Hub'}
+              {t('card_emergency_badge')}
             </span>
           </div>
 
           <div>
-            <span className="text-2xl sm:text-3xl font-black text-cyan-400">PWA</span>
+            <span className="text-2xl sm:text-3xl font-black text-cyan-400">
+              PWA
+            </span>
             <span className="text-xs text-cyan-300 block font-semibold mt-1">
-              {language === 'kn' ? 'ಆಫ್‌ಲೈನ್ ಸಿಂಕ್ ಸೌಲಭ್ಯ' : 'Offline IndexedDB Sync'}
+              {t('offline_pwa')} Sync
             </span>
           </div>
         </div>

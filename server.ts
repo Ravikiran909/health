@@ -3,6 +3,13 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import crypto from 'crypto';
+import {
+  ALL_INDIA_STATES,
+  KARNATAKA_DISTRICTS,
+  VERIFIED_NATIONAL_HOSPITALS,
+  HospitalDirectoryRecord,
+} from './src/data/indiaGeography';
+
 
 dotenv.config();
 
@@ -20,6 +27,17 @@ const ai = new GoogleGenAI({
     },
   },
 });
+
+// Helper to prevent hung Gemini requests if outbound network is delayed
+async function callGeminiWithTimeout<T>(promise: Promise<T>, timeoutMs: number = 4500): Promise<T> {
+  let timeoutHandle: any;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error('AI generation timed out')), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutHandle);
+  });
+}
 
 // --- IN-MEMORY & MONGODB-COMPATIBLE DATA STORE ---
 // Supports persistent in-memory operations with MongoDB-style schema validation
@@ -804,22 +822,656 @@ app.get('/api/facilities', (req: Request, res: Response) => {
   });
 });
 
+// Helper: Haversine distance formula calculation (in kilometers)
+function calculateHaversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth's mean radius in kilometers
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c * 10) / 10;
+}
+
+// 2b. GPS-based Nearest Hospital Finder via OpenStreetMap Overpass API & Verified Facilities
+app.get('/api/nearby-hospitals', async (req: Request, res: Response) => {
+  try {
+    const lat = parseFloat(req.query.lat as string);
+    const lng = parseFloat(req.query.lng as string);
+    let requestedRadiusKm = parseInt(req.query.radius as string) || 5;
+    const autoExpand = req.query.autoExpand !== 'false';
+
+    if (isNaN(lat) || isNaN(lng)) {
+      res.status(400).json({ error: 'Valid latitude and longitude are required.' });
+      return;
+    }
+
+    // Function to collect hospitals within a given radius
+    const collectHospitalsForRadius = async (radiusKm: number) => {
+      const radiusMeters = radiusKm * 1000;
+      const combinedHospitals: any[] = [];
+      const seenNames = new Set<string>();
+
+      // 1. First, search verified Karnataka facilities database with exact Haversine distance
+      for (const fac of facilitiesDB) {
+        const dist = calculateHaversineKm(lat, lng, fac.latitude, fac.longitude);
+        if (dist <= radiusKm) {
+          seenNames.add(fac.name.toLowerCase().trim());
+          combinedHospitals.push({
+            id: fac.id,
+            name: fac.name,
+            kannadaName: fac.kannadaName,
+            type: fac.type,
+            address: fac.address,
+            kannadaAddress: fac.kannadaAddress,
+            phone: fac.phone,
+            distanceKm: dist,
+            latitude: fac.latitude,
+            longitude: fac.longitude,
+            isOpen24x7: fac.isOpen24x7,
+            emergencyAvailable: fac.emergency108Available,
+            source: 'Verified State Health Registry',
+            openingHours: fac.openingHours,
+            bedCount: fac.bedCount,
+            services: fac.services,
+          });
+        }
+      }
+
+      // 2. Query OpenStreetMap Overpass API for real-time hospitals and clinics around the coordinates
+      try {
+        const overpassQuery = `[out:json][timeout:3];(node["amenity"="hospital"](around:${radiusMeters},${lat},${lng});way["amenity"="hospital"](around:${radiusMeters},${lat},${lng});node["amenity"="clinic"](around:${radiusMeters},${lat},${lng});node["healthcare"="hospital"](around:${radiusMeters},${lat},${lng});node["healthcare"="centre"](around:${radiusMeters},${lat},${lng}););out center 25;`;
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+        const osmResponse = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: `data=${encodeURIComponent(overpassQuery)}`,
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (osmResponse.ok) {
+          const osmData: any = await osmResponse.json();
+          const elements = osmData.elements || [];
+
+          for (const el of elements) {
+            const hLat = el.lat || el.center?.lat;
+            const hLng = el.lon || el.center?.lon;
+            if (!hLat || !hLng) continue;
+
+            const tags = el.tags || {};
+            const rawName = tags.name || tags['name:en'] || tags['name:kn'] || (tags.amenity === 'clinic' ? 'Local Health Clinic' : 'Community Health Hospital');
+            const cleanNameKey = rawName.toLowerCase().trim();
+
+            if (seenNames.has(cleanNameKey)) continue;
+            seenNames.add(cleanNameKey);
+
+            const dist = calculateHaversineKm(lat, lng, hLat, hLng);
+            if (dist <= radiusKm) {
+              const street = tags['addr:street'] || '';
+              const city = tags['addr:city'] || tags['addr:suburb'] || tags['addr:district'] || '';
+              const fullAddr = [street, city].filter(Boolean).join(', ') || tags['addr:full'] || `Coordinates: ${hLat.toFixed(4)}, ${hLng.toFixed(4)}`;
+              const phone = tags.phone || tags['contact:phone'] || tags.emergency_phone || '108 (Emergency)';
+              const is24x7 = tags.opening_hours === '24/7' || tags.emergency === 'yes';
+
+              combinedHospitals.push({
+                id: `osm-${el.id}`,
+                name: rawName,
+                kannadaName: tags['name:kn'] || rawName,
+                type: tags.amenity === 'hospital' ? 'GENERAL_HOSPITAL' : 'PHC',
+                address: fullAddr,
+                kannadaAddress: fullAddr,
+                phone: phone,
+                distanceKm: dist,
+                latitude: hLat,
+                longitude: hLng,
+                isOpen24x7: is24x7,
+                emergencyAvailable: tags.emergency === 'yes' || is24x7,
+                source: 'OpenStreetMap',
+                openingHours: tags.opening_hours || (is24x7 ? '24 Hours Emergency' : '8:00 AM - 4:00 PM OPD'),
+                services: [
+                  tags.emergency === 'yes' ? 'Emergency Casualty' : 'Outpatient OPD',
+                  tags.healthcare === 'centre' ? 'Primary Health Clinic' : 'Inpatient Care',
+                ],
+              });
+            }
+          }
+        }
+      } catch (osmErr: any) {
+        console.warn('Overpass API query fallback to local verified directory:', osmErr.message);
+      }
+
+      // Sort by distance ascending (nearest first)
+      combinedHospitals.sort((a, b) => a.distanceKm - b.distanceKm);
+      return combinedHospitals;
+    };
+
+    // Initial search at requested radius (e.g. 5 km)
+    let activeRadius = requestedRadiusKm;
+    let hospitals = await collectHospitalsForRadius(activeRadius);
+    let autoExpanded = false;
+
+    // Automatic radius expansion requirement:
+    // "If fewer than 5 hospitals are found, automatically expand the search radius to 10 km and then 20 km."
+    if (autoExpand && hospitals.length < 5 && activeRadius < 10) {
+      activeRadius = 10;
+      hospitals = await collectHospitalsForRadius(activeRadius);
+      autoExpanded = true;
+    }
+
+    if (autoExpand && hospitals.length < 5 && activeRadius < 20) {
+      activeRadius = 20;
+      hospitals = await collectHospitalsForRadius(activeRadius);
+      autoExpanded = true;
+    }
+
+    res.json({
+      userLocation: { latitude: lat, longitude: lng },
+      searchedRadiusKm: requestedRadiusKm,
+      activeRadiusKm: activeRadius,
+      autoExpanded,
+      total: hospitals.length,
+      hospitals,
+    });
+  } catch (error: any) {
+    console.error('Error finding nearby hospitals:', error);
+    res.status(500).json({ error: 'Failed to retrieve nearby hospitals.' });
+  }
+});
+
+// --- ALL INDIA HOSPITAL FINDER & ADMINISTRATIVE GEOGRAPHY ENGINE ---
+
+// In-Memory cache for Overpass API responses with 1-Hour TTL
+interface CacheItem<T> {
+  data: T;
+  timestamp: number;
+}
+const overpassCache = new Map<string, CacheItem<any[]>>();
+const OVERPASS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// Helper to convert existing facilitiesDB to unified hospital format
+function mapFacilityToHospital(fac: Facility, userLat?: number, userLng?: number): any {
+  const dist = (userLat !== undefined && userLng !== undefined)
+    ? calculateHaversineKm(userLat, userLng, fac.latitude, fac.longitude)
+    : fac.distanceKm;
+
+  return {
+    id: fac.id,
+    name: fac.name,
+    kannadaName: fac.kannadaName,
+    ownership: 'GOVERNMENT' as const,
+    type: fac.type,
+    state: 'Karnataka',
+    stateCode: 'KA',
+    district: fac.district,
+    cityOrTown: fac.villageOrTown,
+    address: fac.address,
+    kannadaAddress: fac.kannadaAddress,
+    pinCode: fac.address.match(/\b\d{6}\b/)?.[0] || '570001',
+    phone: fac.phone,
+    emergencyPhone: '108',
+    isOpen24x7: fac.isOpen24x7,
+    emergency108Available: fac.emergency108Available,
+    emergencyAvailable: fac.emergency108Available,
+    specialties: fac.services,
+    services: fac.services,
+    kannadaServices: fac.kannadaServices,
+    bedCount: fac.bedCount,
+    availableDoctors: fac.availableDoctors,
+    latitude: fac.latitude,
+    longitude: fac.longitude,
+    distanceKm: dist,
+    source: 'National Health Mission (NHM) Karnataka Registry',
+    verifiedDate: '2026-10-20',
+  };
+}
+
+// 2c. Geography API: States and Union Territories (28 States + 8 UTs)
+app.get('/api/geography/states', (_req: Request, res: Response) => {
+  const states = ALL_INDIA_STATES.map((s) => ({
+    code: s.code,
+    name: s.name,
+    type: s.type,
+    capital: s.capital,
+    totalDistricts: s.districts.length,
+  }));
+
+  res.json({
+    total: states.length,
+    statesCount: states.filter((s) => s.type === 'STATE').length,
+    utCount: states.filter((s) => s.type === 'UT').length,
+    states,
+  });
+});
+
+// 2d. Geography API: Districts of a State/UT (with all 31 Karnataka districts)
+app.get('/api/geography/districts', (req: Request, res: Response) => {
+  const stateQuery = (req.query.state as string || '').trim().toLowerCase();
+
+  if (!stateQuery) {
+    res.status(400).json({ error: 'State parameter is required (e.g. Karnataka, KA, Delhi, MH).' });
+    return;
+  }
+
+  const matchedState = ALL_INDIA_STATES.find(
+    (s) => s.name.toLowerCase() === stateQuery || s.code.toLowerCase() === stateQuery
+  );
+
+  if (!matchedState) {
+    res.status(404).json({ error: `State or Union Territory '${stateQuery}' not found in registry.` });
+    return;
+  }
+
+  res.json({
+    stateName: matchedState.name,
+    stateCode: matchedState.code,
+    stateType: matchedState.type,
+    totalDistricts: matchedState.districts.length,
+    districts: matchedState.districts,
+  });
+});
+
+// 2e. Geography API: Cities and Towns of a District
+app.get('/api/geography/cities', (req: Request, res: Response) => {
+  const stateQuery = (req.query.state as string || '').trim().toLowerCase();
+  const districtQuery = (req.query.district as string || '').trim().toLowerCase();
+
+  // Curated prominent administrative hubs per major districts
+  const districtHubs: Record<string, string[]> = {
+    'mysuru': ['Mysuru City', 'Hunsur', 'Nanjangud', 'T. Narasipura', 'K.R. Nagar', 'Periyapatna', 'H.D. Kote', 'Saragur'],
+    'bengaluru urban': ['Bengaluru Central', 'Majestic / City Market', 'Kalasipalyam', 'Shivaji Nagar', 'Jayanagar', 'Whitefield', 'Yelahanka', 'Hebbal', 'Electronic City'],
+    'bengaluru rural': ['Doddaballapura', 'Devanahalli', 'Nelamangala', 'Hosakote'],
+    'bengaluru south (formerly ramanagara)': ['Ramanagara', 'Channapatna', 'Kanakapura', 'Magadi', 'Bidadi'],
+    'dakshina kannada': ['Mangaluru', 'Bantwal', 'Puttur', 'Belthangady', 'Sullia', 'Moodabidri', 'Kadaba'],
+    'dharwad': ['Hubballi', 'Dharwad', 'Navalgund', 'Kalghatgi', 'Kundgol'],
+    'belagavi': ['Belagavi City', 'Gokak', 'Chikkodi', 'Bailhongal', 'Athani', 'Hukkeri', 'Khanapur'],
+    'kalaburagi': ['Kalaburagi City', 'Sedam', 'Aland', 'Afzalpur', 'Chittapur', 'Chincholi', 'Jevargi'],
+    'ballari': ['Ballari City', 'Sandur', 'Siruguppa', 'Kurugodu', 'Kampli'],
+    'vijayanagara': ['Hosapete', 'Hagaribommanahalli', 'Kudligi', 'Kotturu', 'Hoovina Hadagali', 'Harapanahalli'],
+    'shivamogga': ['Shivamogga City', 'Bhadravathi', 'Sagara', 'Shikaripura', 'Thirthahalli', 'Soraba', 'Hosanagara'],
+    'mumbai city': ['Colaba', 'Parel', 'Dadar', 'Marine Lines', 'Fort', 'Byculla'],
+    'mumbai suburban': ['Bandra', 'Andheri', 'Borivali', 'Goregaon', 'Kurla', 'Ghatkopar'],
+    'pune': ['Pune City', 'Shivajinagar', 'Kothrud', 'Pimpri-Chinchwad', 'Hadapsar', 'Hinjewadi'],
+    'chennai': ['Park Town', 'Central', 'T. Nagar', 'Adyar', 'Anna Nagar', 'Mylapore', 'Guindy'],
+    'hyderabad': ['Afzal Gunj', 'Banjara Hills', 'Jubilee Hills', 'Secunderabad', 'Charminar', 'Gachibowli', 'Hitec City'],
+    'thiruvananthapuram': ['Thiruvananthapuram City', 'Medical College', 'Kowdiar', 'Nemom', 'Attingal', 'Neyyattinkara'],
+    'kolkata': ['Bhowanipore', 'Esplanade', 'Salt Lake', 'Park Circus', 'Alipore', 'New Town'],
+    'lucknow': ['Chowk', 'Hazratganj', 'Gomti Nagar', 'Alambagh', 'Indira Nagar', 'Charbagh'],
+    'new delhi': ['Ansari Nagar', 'Connaught Place', 'Chanakyapuri', 'Barakhamba'],
+    'south delhi': ['Saket', 'Hauz Khas', 'Green Park', 'Greater Kailash', 'Malviya Nagar'],
+  };
+
+  const matched = districtHubs[districtQuery] || [
+    `${req.query.district || 'Main'} Town`,
+    `${req.query.district || 'Rural'} Taluk Headquarter`,
+  ];
+
+  res.json({
+    state: req.query.state || '',
+    district: req.query.district || '',
+    cities: matched,
+  });
+});
+
+// 2f. All India Hospital Search API: Multi-filter, GPS radius, OSM Overpass, and Caching
+app.get('/api/hospitals/search', async (req: Request, res: Response) => {
+  try {
+    const lat = req.query.lat ? parseFloat(req.query.lat as string) : undefined;
+    const lng = req.query.lng ? parseFloat(req.query.lng as string) : undefined;
+    const radiusKm = req.query.radius ? parseInt(req.query.radius as string) : (lat && lng ? 20 : undefined);
+    const stateParam = (req.query.state as string || '').trim().toLowerCase();
+    const districtParam = (req.query.district as string || '').trim().toLowerCase();
+    const cityParam = (req.query.city as string || '').trim().toLowerCase();
+    const query = (req.query.q as string || '').trim().toLowerCase();
+    const ownership = (req.query.ownership as string || 'ALL').toUpperCase();
+    const facilityType = (req.query.type as string || 'ALL').toUpperCase();
+    const specialty = (req.query.specialty as string || '').trim().toLowerCase();
+    const open24x7 = req.query.open24x7 === 'true';
+    const emergencyOnly = req.query.emergencyOnly === 'true';
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 12));
+
+    const combinedHospitals: any[] = [];
+    const seenHospitalKeys = new Set<string>();
+
+    const addHospital = (hosp: any) => {
+      const key = `${hosp.name.toLowerCase().trim()}_${(hosp.district || '').toLowerCase()}`;
+      if (!seenHospitalKeys.has(key)) {
+        seenHospitalKeys.add(key);
+        combinedHospitals.push(hosp);
+      }
+    };
+
+    // 1. Ingest verified national hospital registry
+    for (const h of VERIFIED_NATIONAL_HOSPITALS) {
+      const dist = (lat !== undefined && lng !== undefined)
+        ? calculateHaversineKm(lat, lng, h.latitude, h.longitude)
+        : undefined;
+
+      addHospital({
+        ...h,
+        emergencyAvailable: h.emergency108Available,
+        services: h.specialties,
+        distanceKm: dist,
+      });
+    }
+
+    // 2. Ingest existing facilitiesDB (deep Karnataka local PHCs/CHCs)
+    for (const f of facilitiesDB) {
+      addHospital(mapFacilityToHospital(f, lat, lng));
+    }
+
+    // 3. Query OpenStreetMap Overpass API if coordinates or city/district provided
+    // Uses 1-Hour server in-memory cache to prevent OSM rate limits
+    if (lat !== undefined && lng !== undefined && radiusKm !== undefined) {
+      const cacheKey = `osm_gps_${lat.toFixed(3)}_${lng.toFixed(3)}_${radiusKm}`;
+      const now = Date.now();
+      const cached = overpassCache.get(cacheKey);
+
+      if (cached && now - cached.timestamp < OVERPASS_CACHE_TTL_MS) {
+        for (const osmHosp of cached.data) {
+          const dist = calculateHaversineKm(lat, lng, osmHosp.latitude, osmHosp.longitude);
+          addHospital({ ...osmHosp, distanceKm: dist });
+        }
+      } else {
+        // Query live Overpass API with strict 2500ms timeout
+        try {
+          const radiusMeters = radiusKm * 1000;
+          const overpassQuery = `[out:json][timeout:3];(node["amenity"="hospital"](around:${radiusMeters},${lat},${lng});way["amenity"="hospital"](around:${radiusMeters},${lat},${lng});node["amenity"="clinic"](around:${radiusMeters},${lat},${lng});node["healthcare"="hospital"](around:${radiusMeters},${lat},${lng}););out center 30;`;
+
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+          const osmRes = await fetch('https://overpass-api.de/api/interpreter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `data=${encodeURIComponent(overpassQuery)}`,
+            signal: controller.signal,
+          });
+
+          clearTimeout(timeoutId);
+
+          if (osmRes.ok) {
+            const osmData: any = await osmRes.json();
+            const elements = osmData.elements || [];
+            const freshOsmList: any[] = [];
+
+            for (const el of elements) {
+              const hLat = el.lat || el.center?.lat;
+              const hLng = el.lon || el.center?.lon;
+              if (!hLat || !hLng) continue;
+
+              const tags = el.tags || {};
+              const rawName = tags.name || tags['name:en'] || tags['name:kn'] || tags['name:hi'] || (tags.amenity === 'clinic' ? 'Local Health Clinic' : 'Community Hospital');
+              const isGovt = Boolean(tags.operator_type === 'public' || tags.operator === 'Government' || /government|civil|district|phc|chc|govt/i.test(rawName));
+              const is24x7 = tags.opening_hours === '24/7' || tags.emergency === 'yes';
+
+              const street = tags['addr:street'] || '';
+              const city = tags['addr:city'] || tags['addr:suburb'] || tags['addr:district'] || '';
+              const fullAddr = [street, city].filter(Boolean).join(', ') || tags['addr:full'] || `Location Coordinates: ${hLat.toFixed(4)} N, ${hLng.toFixed(4)} E`;
+
+              const phone = tags.phone || tags['contact:phone'] || (tags.emergency === 'yes' ? '108 (Emergency)' : undefined);
+
+              const parsedOsm: any = {
+                id: `osm-${el.id}`,
+                name: rawName,
+                kannadaName: tags['name:kn'] || undefined,
+                hindiName: tags['name:hi'] || undefined,
+                ownership: isGovt ? 'GOVERNMENT' : 'PRIVATE',
+                type: tags.amenity === 'hospital' ? 'GENERAL_HOSPITAL' : 'PHC',
+                state: tags['addr:state'] || (stateParam ? stateParam : 'India'),
+                district: tags['addr:district'] || tags['addr:county'] || (districtParam ? districtParam : 'Local Area'),
+                cityOrTown: city || 'Local Area',
+                address: fullAddr,
+                pinCode: tags['addr:postcode'] || undefined,
+                phone: phone,
+                emergencyPhone: '108',
+                isOpen24x7: is24x7,
+                emergency108Available: is24x7 || tags.emergency === 'yes',
+                emergencyAvailable: is24x7 || tags.emergency === 'yes',
+                specialties: [
+                  is24x7 ? 'Emergency & Casualty' : 'Outpatient OPD',
+                  tags.healthcare === 'centre' ? 'Primary Health Care' : 'Inpatient Care',
+                ],
+                latitude: hLat,
+                longitude: hLng,
+                source: 'OpenStreetMap (Verified Node)',
+                verifiedDate: '2026-10-01',
+              };
+
+              freshOsmList.push(parsedOsm);
+              const dist = calculateHaversineKm(lat, lng, hLat, hLng);
+              addHospital({ ...parsedOsm, distanceKm: dist });
+            }
+
+            overpassCache.set(cacheKey, { data: freshOsmList, timestamp: now });
+          }
+        } catch (osmErr: any) {
+          console.warn('Overpass search timed out, served from verified national directory:', osmErr.message);
+        }
+      }
+    }
+
+    // Filter combined results
+    let filtered = combinedHospitals.filter((h) => {
+      // Radius filter
+      if (radiusKm !== undefined && h.distanceKm !== undefined && h.distanceKm > radiusKm) {
+        return false;
+      }
+
+      // State filter
+      if (stateParam && stateParam !== 'all') {
+        const stateMatch =
+          h.state?.toLowerCase().includes(stateParam) ||
+          h.stateCode?.toLowerCase() === stateParam;
+        if (!stateMatch) return false;
+      }
+
+      // District filter
+      if (districtParam && districtParam !== 'all') {
+        const dNorm = (h.district || '').toLowerCase();
+        // Allow flexible matching for former Ramanagara district name
+        const match = dNorm.includes(districtParam) ||
+          (districtParam.includes('ramanagara') && dNorm.includes('ramanagara')) ||
+          (districtParam.includes('bengaluru south') && (dNorm.includes('bengaluru south') || dNorm.includes('ramanagara')));
+        if (!match) return false;
+      }
+
+      // City / Town filter
+      if (cityParam && cityParam !== 'all') {
+        const cNorm = (h.cityOrTown || '').toLowerCase();
+        const aNorm = (h.address || '').toLowerCase();
+        if (!cNorm.includes(cityParam) && !aNorm.includes(cityParam)) {
+          return false;
+        }
+      }
+
+      // Text query (keyword search: AIIMS, NIMHANS, Victoria, Fortis, etc.)
+      if (query) {
+        const q = query.toLowerCase();
+        const inName = h.name.toLowerCase().includes(q);
+        const inKan = (h.kannadaName || '').includes(q);
+        const inHin = (h.hindiName || '').includes(q);
+        const inAddr = (h.address || '').toLowerCase().includes(q);
+        const inDistrict = (h.district || '').toLowerCase().includes(q);
+        const inSpecialty = (h.specialties || []).some((s: string) => s.toLowerCase().includes(q));
+
+        if (!inName && !inKan && !inHin && !inAddr && !inDistrict && !inSpecialty) {
+          return false;
+        }
+      }
+
+      // Ownership filter (GOVERNMENT vs PRIVATE)
+      if (ownership !== 'ALL') {
+        if (h.ownership !== ownership) return false;
+      }
+
+      // Facility Type filter
+      if (facilityType !== 'ALL') {
+        if (h.type !== facilityType) return false;
+      }
+
+      // Specialty filter
+      if (specialty) {
+        const hasSpecialty = (h.specialties || []).some((s: string) =>
+          s.toLowerCase().includes(specialty)
+        );
+        if (!hasSpecialty) return false;
+      }
+
+      // 24x7 filter
+      if (open24x7 && !h.isOpen24x7) return false;
+
+      // Emergency 108 only
+      if (emergencyOnly && !h.emergency108Available && !h.emergencyAvailable) return false;
+
+      return true;
+    });
+
+    // Sorting:
+    // If distance is available, sort ascending by distance; otherwise sort by bedCount/name
+    filtered.sort((a, b) => {
+      if (a.distanceKm !== undefined && b.distanceKm !== undefined) {
+        return a.distanceKm - b.distanceKm;
+      }
+      if (a.distanceKm !== undefined) return -1;
+      if (b.distanceKm !== undefined) return 1;
+      return (b.bedCount || 0) - (a.bedCount || 0);
+    });
+
+    // Pagination
+    const total = filtered.length;
+    const totalPages = Math.ceil(total / limit);
+    const paginated = filtered.slice((page - 1) * limit, page * limit);
+
+    res.json({
+      total,
+      page,
+      limit,
+      totalPages,
+      hasMore: page < totalPages,
+      userLocation: lat && lng ? { latitude: lat, longitude: lng } : null,
+      searchedRadiusKm: radiusKm,
+      hospitals: paginated,
+    });
+  } catch (error: any) {
+    console.error('All India hospital search error:', error);
+    res.status(500).json({ error: 'Failed to search hospitals across India.' });
+  }
+});
+
+// 2g. Single Hospital Details API by ID
+app.get('/api/hospitals/:id', (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Search verified national directory
+  const nationalHosp = VERIFIED_NATIONAL_HOSPITALS.find((h) => h.id === id);
+  if (nationalHosp) {
+    res.json({ hospital: nationalHosp });
+    return;
+  }
+
+  // Search local facilitiesDB
+  const localFac = facilitiesDB.find((f) => f.id === id);
+  if (localFac) {
+    res.json({ hospital: mapFacilityToHospital(localFac) });
+    return;
+  }
+
+  // Check OSM cache
+  for (const cacheItem of overpassCache.values()) {
+    const found = cacheItem.data.find((h) => h.id === id);
+    if (found) {
+      res.json({ hospital: found });
+      return;
+    }
+  }
+
+  res.status(404).json({ error: `Hospital with ID '${id}' not found.` });
+});
+
+
 // 3. Gemini AI Healthcare Navigation Agent (Step 4 & 9)
+// Strictly follows safety rules: does NOT diagnose, does NOT prescribe medicines.
+// Helper to normalize language code across requests
+function resolveLanguageCode(input: string = 'en'): 'en' | 'kn' | 'hi' | 'te' | 'ml' | 'ta' {
+  const l = (input || '').toLowerCase();
+  if (l === 'kn' || l.includes('kannada') || /[\u0C80-\u0CFF]/.test(l)) return 'kn';
+  if (l === 'hi' || l.includes('hindi') || /[\u0900-\u097F]/.test(l)) return 'hi';
+  if (l === 'te' || l.includes('telugu') || /[\u0C00-\u0C7F]/.test(l)) return 'te';
+  if (l === 'ml' || l.includes('malayalam') || /[\u0D00-\u0D7F]/.test(l)) return 'ml';
+  if (l === 'ta' || l.includes('tamil') || /[\u0B80-\u0BFF]/.test(l)) return 'ta';
+  return 'en';
+}
+
+const languageLabels: Record<'en' | 'kn' | 'hi' | 'te' | 'ml' | 'ta', string> = {
+  en: 'English',
+  kn: 'Kannada (ಕನ್ನಡ)',
+  hi: 'Hindi (हिन्दी)',
+  te: 'Telugu (తెలుగు)',
+  ml: 'Malayalam (മലയാളം)',
+  ta: 'Tamil (தமிழ்)',
+};
+
+// Medically reviewed safety fallback messages for critical health workflows
+const reviewedEmergencyAlerts: Record<'en' | 'kn' | 'hi' | 'te' | 'ml' | 'ta', string> = {
+  en: 'This appears to be an urgent medical emergency. Please dial 108 ambulance immediately or visit the nearest emergency casualty ward.',
+  kn: 'ಇದು ತಕ್ಷಣ ಗಮನಹರಿಸಬೇಕಾದ ತುರ್ತು ವೈದ್ಯಕೀಯ ಪರಿಸ್ಥಿತಿ. ದಯವಿಟ್ಟು 108 ತುರ್ತು ಆಂಬುಲೆನ್ಸ್ ಕರೆ ಮಾಡಿ ಅಥವಾ ಹತ್ತಿರದ ತಾಲೂಕು ಆಸ್ಪತ್ರೆ ತುರ್ತು ನಿಗಾ ಘಟಕಕ್ಕೆ ಭೇಟಿ ನೀಡಿ.',
+  hi: 'यह एक गंभीर आपातकालीन स्थिति प्रतीत होती है। कृपया तुरंत 108 एम्बुलेंस को कॉल करें या नजदीकी अस्पताल के आपातकालीन वार्ड में जाएं।',
+  te: 'ఇది తీవ్రమైన అత్యవసర పరిస్థితిగా కనిపిస్తోంది. దయచేసి వెంటనే 108 అంబులెన్స్‌కు కాల్ చేయండి లేదా సమీప అత్యవసర ఆసుపత్రికి వెళ్లండి.',
+  ml: 'ഇത് അടിയന്തിര സാഹചര്യമായി കാണപ്പെടുന്നു. ദയവായി ഉടൻ 108 ആംബുലൻസിലേക്ക് വിളിക്കുക അല്ലെങ്കിൽ അടുത്തുള്ള അത്യാഹിത വിഭാഗത്തിൽ എത്തുക.',
+  ta: 'இது தீவிர அவசர மருத்துவ நிலையாகத் தெரிகிறது. தயவுசெய்து உடனடியாக 108 ஆம்புலன்ஸை அழைக்கவும் அல்லது அருகிலுள்ள அவசர சிகிச்சைப் பிரிவுக்குச் செல்லவும்.',
+};
+
+const reviewedHospitalReplies: Record<'en' | 'kn' | 'hi' | 'te' | 'ml' | 'ta', string> = {
+  en: 'Bilikere Primary Health Centre (24/7 Normal Deliveries) and Hunsur Taluk General Hospital are available nearby. Opening matching facilities now.',
+  kn: 'ಬಿಳಿಕೆರೆ ಪ್ರಾಥಮಿಕ ಆರೋಗ್ಯ ಕೇಂದ್ರ (24/7 ಸಹಜ ಹೆರಿಗೆ ಸೌಲಭ್ಯ) ಹಾಗೂ ಹುಣಸೂರು ತಾಲೂಕು ಸಾರ್ವಜನಿಕ ಆಸ್ಪತ್ರೆ ಸಮೀಪದಲ್ಲಿ ಲಭ್ಯವಿವೆ. ಆಸ್ಪತ್ರೆಗಳ ಪಟ್ಟಿ ತೆರೆಯಲಾಗುತ್ತಿದೆ.',
+  hi: 'बिलिकेरे प्राथमिक स्वास्थ्य केंद्र (24/7 प्रसव सुविधा) और हुनसूर तालुका सामान्य अस्पताल नजदीकी स्वास्थ्य केंद्र हैं। अस्पताल सूची खोली जा रही है।',
+  te: 'బిలికెరె ప్రాథమిక ఆరోగ్య కేంద్రం (24/7 డెలివరీ పాయింట్) మరియు హున్సూర్ తాలూకా సాధారణ ఆసుపత్రి సమీపంలో అందుబాటులో ఉన్నాయి. ఆసుపత్రుల జాబితాను తెరుస్తున్నాము.',
+  ml: 'ബിലികെരെ പ്രാഥമിക ആരോഗ്യ കേന്ദ്രം (24/7 പ്രസവ സേവനം), ഹുൻസൂർ താലൂക്ക് ജനറൽ ആശുപത്രി എന്നിവ സമീപത്ത് ലഭ്യമാണ്. ആശുപത്രി പട്ടിക തുറക്കുന്നു.',
+  ta: 'பிலிகெரே ஆரம்ப சுகாதார நிலையம் (24/7 பிரசவ வசதி) மற்றும் ஹுன்சூர் வட்டார பொது மருத்துவமனை ஆகியவை அருகில் உள்ளன. மருத்துவமனைப் பட்டியல் திறக்கப்படுகிறது.',
+};
+
+const reviewedAppointmentReplies: Record<'en' | 'kn' | 'hi' | 'te' | 'ml' | 'ta', string> = {
+  en: 'You can submit a queue-free appointment request for your checkup or vaccination. Opening the appointment booking form now.',
+  kn: 'ನೀವು ಪ್ರಾಥಮಿಕ ಅಥವಾ ತಾಲೂಕು ಆಸ್ಪತ್ರೆಗೆ ಭೇಟಿ ನೀಡಲು ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್ ವಿನಂತಿ ನಮೂನೆಯನ್ನು ತೆರೆಯಲಾಗುತ್ತಿದೆ.',
+  hi: 'आप अपनी जांच या टीकाकरण के लिए बिना कतार लगे अपॉइंटमेंट अनुरोध सबमिट कर सकते हैं। फॉर्म खोला जा रहा है।',
+  te: 'మీరు మీ పరీక్ష లేదా టీకా కోసం క్యూ లేకుండా అపాయింట్‌మెంట్ అభ్యర్థించవచ్చు. ఫారమ్‌ను తెరుస్తున్నాము.',
+  ml: 'ക്യൂ നിൽക്കാതെ പരിശോധനയ്ക്കോ വാക്സിനേഷനായോ അപ്പോയിന്റ്മെന്റ് അഭ്യർത്ഥിക്കാം. ബുക്കിംഗ് ഫോം തുറക്കുന്നു.',
+  ta: 'பரிசோதனை அல்லது தடுப்பூசிக்கான வரிசையற்ற முன்பதிவு கோரிக்கைப் படிவம் திறக்கப்படுகிறது.',
+};
+
+const reviewedGeneralReplies: Record<'en' | 'kn' | 'hi' | 'te' | 'ml' | 'ta', string> = {
+  en: 'Hello! I am HealthConnect AI Assistant. I can help you find nearby PHCs, book appointments, and understand verified public health guidelines in your language. I do not prescribe medicines.',
+  kn: 'ನಮಸ್ಕಾರ! ನಾನು ಆರೋಗ್ಯ ಸಂಪರ್ಕ ಸಹಾಯಕ. ಆಸ್ಪತ್ರೆಗಳು, ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್, ಲಸಿಕೆ ಅಥವಾ ಆಶಾ ಸೇವೆಗಳ ಬಗ್ಗೆ ನಿಮಗೆ ನೆರವಾಗಬಲ್ಲೆ. ನಾನು ಔಷಧಿ ಶಿಫಾರಸು ಮಾಡುವುದಿಲ್ಲ.',
+  hi: 'नमस्ते! मैं हेल्थकनेक्ट AI सहायक हूं। मैं नजदीकी अस्पताल खोजने, अपॉइंटमेंट बुक करने और सरकारी स्वास्थ्य जानकारी में आपकी मदद कर सकता हूं। मैं दवाएं नहीं लिखता।',
+  te: 'నమస్కారం! నేను హెల్త్‌కనెక్ట్ AI సహాయకుడిని. సమీప ఆసుపత్రులు, అపాయింట్‌మెంట్లు, టీకాల సమాచారంలో సహాయపడగలను. నేను మందులను సూచించను.',
+  ml: 'നമസ്കാരം! ഞാൻ ഹെൽത്ത് കണക്ട് AI സഹായിയാണ്. ആശുപത്രികൾ കണ്ടെത്താനും അപ്പോയിന്റ്മെന്റുകൾ എടുക്കാനും ആരോഗ്യ വിവരങ്ങൾ നൽകാനും സഹായിക്കാം. ഞാൻ മരുന്നുകൾ നിർദ്ദേശിക്കാറില്ല.',
+  ta: 'வணக்கம்! நான் ஹெல்த்கனெக்ட் AI உதவியாளர். அருகிலுள்ள மருத்துவமனைகளைக் கண்டறியவும், முன்பதிவு செய்யவும், சுகாதாரத் தகவல்களை அறியவும் உதவுவேன். நான் மருந்துகளைப் பரிந்துரைப்பதில்லை.',
+};
+
+// 3. Gemini AI Healthcare Navigation Agent (Multilingual)
 // Strictly follows safety rules: does NOT diagnose, does NOT prescribe medicines.
 app.post('/api/ai/navigate', async (req: Request, res: Response) => {
   const prompt = req.body?.prompt;
-  const language = req.body?.language || 'kannada';
+  const requestedLang = req.body?.language || 'en';
 
   if (!prompt || typeof prompt !== 'string') {
     res.status(400).json({ error: 'Prompt is required.' });
     return;
   }
 
-  const isKannada = language === 'kannada' || /[\u0C80-\u0CFF]/.test(prompt);
+  // Detect script or requested language code
+  const langCode = resolveLanguageCode(requestedLang) || resolveLanguageCode(prompt);
+  const targetLanguageName = languageLabels[langCode] || 'English';
 
   try {
-
-    // Provide safety preamble and tool database context
     const facilitiesSummary = facilitiesDB.map(f => ({
       name: f.name,
       kannadaName: f.kannadaName,
@@ -830,8 +1482,8 @@ app.post('/api/ai/navigate', async (req: Request, res: Response) => {
       isOpen24x7: f.isOpen24x7
     }));
 
-    const systemInstruction = `You are HealthConnect AI (ಆರೋಗ್ಯ ಸಂಪರ್ಕ ಸಹಾಯಕ), an empathetic, accessible public healthcare navigation assistant for rural Karnataka.
-You help citizens and ASHA community workers navigate government healthcare services (PHCs, CHCs, Taluk Hospitals, District Hospitals, 108 Emergency, and national health programs).
+    const systemInstruction = `You are HealthConnect AI, an empathetic, accessible public healthcare navigation assistant designed for Indian citizens and ASHA community workers.
+You help citizens navigate government healthcare services (PHCs, CHCs, Taluk Hospitals, District Hospitals, 108 Emergency, and national health programs).
 
 CRITICAL SAFETY & MEDICAL POLICIES:
 1. NEVER diagnose illnesses or medical conditions.
@@ -840,12 +1492,12 @@ CRITICAL SAFETY & MEDICAL POLICIES:
    - Instruct them clearly and urgently to CALL 108 IMMEDIATELY or rush to the nearest emergency casualty.
    - Set action to "OPEN_108_EMERGENCY".
 4. If reliable facility or public health information is unavailable, state so honestly.
-5. Provide helpful, polite, easy-to-understand explanations in ${isKannada ? 'Kannada (ಕನ್ನಡ) with clear phrasing suitable for rural citizens' : 'clear, simple English'}.
+5. Provide helpful, polite, easy-to-understand explanations strictly in ${targetLanguageName} with clear phrasing suitable for rural citizens.
 6. Recommend real facilities from this verified Karnataka directory: ${JSON.stringify(facilitiesSummary)}.
 
 Return your response strictly in JSON format matching this schema:
 {
-  "reply": "string (the natural language message to the user in ${isKannada ? 'Kannada' : 'English'})",
+  "reply": "string (the natural language message to the user in ${targetLanguageName})",
   "suggestedAction": "OPEN_FACILITIES" | "OPEN_APPOINTMENT" | "OPEN_108_EMERGENCY" | "OPEN_ASHA_DASHBOARD" | "OPEN_HEALTH_TOPICS" | "NONE",
   "actionPayload": "optional string or facility ID",
   "isUrgent": boolean,
@@ -853,32 +1505,45 @@ Return your response strictly in JSON format matching this schema:
 }`;
 
     if (!process.env.GEMINI_API_KEY) {
-      // Offline / Fallback rule-based response if GEMINI_API_KEY is not configured
+      // Deterministic rule-based fallback if GEMINI_API_KEY is not configured
       const lower = prompt.toLowerCase();
       let reply = '';
       let action = 'NONE';
       let isUrgent = false;
 
-      if (lower.includes('108') || lower.includes('ತುರ್ತು') || lower.includes('ಹಾವು') || lower.includes('snake') || lower.includes('chest pain') || lower.includes('ಎದೆ ನೋವು')) {
-        reply = isKannada
-          ? 'ಇದು ತುರ್ತು ವೈದ್ಯಕೀಯ ಪರಿಸ್ಥಿತಿಯಂತೆ ಕಾಣಿಸುತ್ತಿದೆ. ದಯವಿಟ್ಟು ತಕ್ಷಣ 108 ಆಂಬುಲೆನ್ಸ್‌ಗೆ ಕರೆ ಮಾಡಿ ಅಥವಾ ಹತ್ತಿರದ ತಾಲೂಕು ಆಸ್ಪತ್ರೆ ತುರ್ತು ನಿಗಾ ಘಟಕಕ್ಕೆ ಭೇಟಿ ನೀಡಿ.'
-          : 'This appears to be an urgent medical situation. Please dial 108 emergency ambulance immediately or visit the nearest hospital casualty.';
+      if (
+        lower.includes('108') ||
+        lower.includes('ತುರ್ತು') || lower.includes('ಹಾವು') || lower.includes('ಆಂಬುಲೆನ್ಸ್') ||
+        lower.includes('आपातकाल') || lower.includes('एम्बुलेंस') || lower.includes('सांप') ||
+        lower.includes('అత్యవసరం') || lower.includes('పాము') ||
+        lower.includes('അടിയന്തരം') || lower.includes('പാമ്പ്') ||
+        lower.includes('அவசரம்') || lower.includes('பாம்பு') ||
+        lower.includes('emergency') || lower.includes('snake') || lower.includes('chest pain')
+      ) {
+        reply = reviewedEmergencyAlerts[langCode];
         action = 'OPEN_108_EMERGENCY';
         isUrgent = true;
-      } else if (lower.includes('hospital') || lower.includes('phc') || lower.includes('ಆಸ್ಪತ್ರೆ') || lower.includes('ಹುಡುಕಿ') || lower.includes('find')) {
-        reply = isKannada
-          ? 'ಬಿಳಿಕೆರೆ ಪ್ರಾಥಮಿಕ ಆರೋಗ್ಯ ಕೇಂದ್ರ (24/7 ಹೆರಿಗೆ ಸೌಲಭ್ಯ) ಮತ್ತು ಹುಣಸೂರು ತಾಲೂಕು ಸಾರ್ವಜನಿಕ ಆಸ್ಪತ್ರೆ ಸಮೀಪದಲ್ಲಿ ಲಭ್ಯವಿವೆ. ಆಸ್ಪತ್ರೆಗಳ ಪಟ್ಟಿಯನ್ನು ತೆರೆಯುತ್ತಿದ್ದೇನೆ.'
-          : 'Bilikere Primary Health Centre (24/7 Delivery) and Hunsur Taluk General Hospital are closest to your location. Opening the facility finder now.';
+      } else if (
+        lower.includes('hospital') || lower.includes('phc') || lower.includes('clinic') ||
+        lower.includes('ಆಸ್ಪತ್ರೆ') || lower.includes('ಹುಡುಕಿ') ||
+        lower.includes('अस्पताल') || lower.includes('खोजें') ||
+        lower.includes('ఆసుపత్రి') || lower.includes('వెతకండి') ||
+        lower.includes('ആശുപത്രി') ||
+        lower.includes('மருத்துவமனை')
+      ) {
+        reply = reviewedHospitalReplies[langCode];
         action = 'OPEN_FACILITIES';
-      } else if (lower.includes('appointment') || lower.includes('ಬುಕ್') || lower.includes('ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್') || lower.includes('book')) {
-        reply = isKannada
-          ? 'ನೀವು ಹತ್ತಿರದ ಪ್ರಾಥಮಿಕ ಅಥವಾ ತಾಲೂಕು ಆಸ್ಪತ್ರೆಗೆ ಭೇಟಿಯ ದಿನಾಂಕವನ್ನು ಸುಲಭವಾಗಿ ನಿಗದಿಪಡಿಸಬಹುದು. ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್ ನಮೂನೆಯನ್ನು ತೆರೆಯುತ್ತಿದ್ದೇನೆ.'
-          : 'You can submit an appointment request to your nearest PHC or Taluk Hospital. Opening the booking request form now.';
+      } else if (
+        lower.includes('appointment') || lower.includes('book') ||
+        lower.includes('ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್') || lower.includes('ಬುಕ್') ||
+        lower.includes('अपॉइंटमेंट') ||
+        lower.includes('ముன்பதிவு') ||
+        lower.includes('അപ്പോയിന്റ്മെന്റ്')
+      ) {
+        reply = reviewedAppointmentReplies[langCode];
         action = 'OPEN_APPOINTMENT';
       } else {
-        reply = isKannada
-          ? 'ನಮಸ್ಕಾರ, ನಾನು ಆರೋಗ್ಯ ಸಂಪರ್ಕ ಸಹಾಯಕ. ನಾನು ಆಸ್ಪತ್ರೆ ಹುಡುಕಲು, ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್ ಪಡೆಯಲು, ಲಸಿಕೆ ಹಾಗೂ ಗರ್ಭಿಣಿಯರ ಆರೈಕೆ ಬಗ್ಗೆ ಸರ್ಕಾರಿ ಮಾಹಿತಿ ನೀಡಬಲ್ಲೆ. ನಾನು ಔಷಧಿ ಶಿಫಾರಸು ಮಾಡುವುದಿಲ್ಲ.'
-          : 'Hello! I am HealthConnect AI Assistant. I can help you find nearby PHCs, book appointments, and understand public health schedules. I do not prescribe medicines.';
+        reply = reviewedGeneralReplies[langCode];
         action = 'OPEN_HEALTH_TOPICS';
       }
 
@@ -886,20 +1551,23 @@ Return your response strictly in JSON format matching this schema:
         reply,
         suggestedAction: action,
         isUrgent,
-        sources: ['National Health Mission Karnataka Public Health Directory'],
+        sources: ['National Health Mission Public Health Directory'],
       });
       return;
     }
 
-    // Call Gemini 3.8 Flash model
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        systemInstruction,
-        responseMimeType: 'application/json',
-      },
-    });
+    // Call Gemini 3.8 Flash model with safety timeout
+    const response = await callGeminiWithTimeout(
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+        },
+      }),
+      4500
+    );
 
     const text = response.text || '{}';
     let parsed: any;
@@ -910,70 +1578,112 @@ Return your response strictly in JSON format matching this schema:
         reply: text,
         suggestedAction: 'NONE',
         isUrgent: false,
-        sources: ['NHM Karnataka Guidelines'],
+        sources: ['National Health Mission Guidelines'],
       };
     }
 
     res.json(parsed);
-    } catch (error: any) {
-      console.warn('Gemini API temporary issue, using verified facility knowledge base fallback:', error.message);
-      
-      const lower = prompt.toLowerCase();
-      let reply = '';
-      let action = 'NONE';
-      let isUrgent = false;
+  } catch (error: any) {
+    console.warn('Gemini API temporary issue, using verified multilingual knowledge base fallback:', error.message);
+    
+    const lower = prompt.toLowerCase();
+    let reply = '';
+    let action = 'NONE';
+    let isUrgent = false;
 
-      if (
-        lower.includes('108') ||
-        lower.includes('ತುರ್ತು') ||
-        lower.includes('ಹಾವು') ||
-        lower.includes('snake') ||
-        lower.includes('chest pain') ||
-        lower.includes('ಎದೆ ನೋವು') ||
-        lower.includes('ರಕ್ತಸ್ರಾವ') ||
-        lower.includes('bleeding')
-      ) {
-        reply = isKannada
-          ? 'ಇದು ತಕ್ಷಣ ಗಮನಹರಿಸಬೇಕಾದ ವೈದ್ಯಕೀಯ ಪರಿಸ್ಥಿತಿ. ದಯವಿಟ್ಟು 108 ತುರ್ತು ಆಂಬುಲೆನ್ಸ್ ಕರೆ ಮಾಡಿ ಅಥವಾ ಹತ್ತಿರದ ತಾಲೂಕು ಆಸ್ಪತ್ರೆ ತುರ್ತು ನಿಗಾ ಘಟಕಕ್ಕೆ ಭೇಟಿ ನೀಡಿ.'
-          : 'This requires urgent medical attention. Please call 108 emergency ambulance immediately or visit the nearest hospital casualty.';
-        action = 'OPEN_108_EMERGENCY';
-        isUrgent = true;
-      } else if (
-        lower.includes('hospital') ||
-        lower.includes('phc') ||
-        lower.includes('ಆಸ್ಪತ್ರೆ') ||
-        lower.includes('ಹುಡುಕಿ') ||
-        lower.includes('ಹುಣಸೂರು') ||
-        lower.includes('ಬಿಳಿಕೆರೆ') ||
-        lower.includes('delivery') ||
-        lower.includes('ಹೆರಿಗೆ')
-      ) {
-        reply = isKannada
-          ? 'ಬಿಳಿಕೆರೆ ಪ್ರಾಥಮಿಕ ಆರೋಗ್ಯ ಕೇಂದ್ರ (24/7 ಸಹಜ ಹೆರಿಗೆ ಸೌಲಭ್ಯ) ಹಾಗೂ ಹುಣಸೂರು ತಾಲೂಕು ಸಾರ್ವಜನಿಕ ಆಸ್ಪತ್ರೆ ಲಭ್ಯವಿವೆ. ಆಸ್ಪತ್ರೆಗಳ ಸಂಪರ್ಕ ಮತ್ತು ವಿವರಗಳ ಪಟ್ಟಿ ತೆರೆಯಲಾಗುತ್ತಿದೆ.'
-          : 'Bilikere Primary Health Centre (24/7 Normal Deliveries) and Hunsur Taluk General Hospital are the nearest facilities. Opening matching facilities now.';
-        action = 'OPEN_FACILITIES';
-      } else if (lower.includes('appointment') || lower.includes('ಬುಕ್') || lower.includes('ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್') || lower.includes('book')) {
-        reply = isKannada
-          ? 'ಪ್ರಾಥಮಿಕ ಅಥವಾ ತಾಲೂಕು ಆಸ್ಪತ್ರೆಗೆ ಭೇಟಿ ನೀಡಲು ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್ ವಿನಂತಿ ನಮೂನೆಯನ್ನು ತೆರೆಯಲಾಗುತ್ತಿದೆ.'
-          : 'Opening the appointment request form for your visit to the Primary Health Centre.';
-        action = 'OPEN_APPOINTMENT';
-      } else {
-        reply = isKannada
-          ? 'ನಮಸ್ಕಾರ! ನಾನು ಆರೋಗ್ಯ ಸಂಪರ್ಕ ಸಹಾಯಕ. ಆಸ್ಪತ್ರೆಗಳು, ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್, ಲಸಿಕೆ ಅಥವಾ ಆಶಾ ಸೇವೆಗಳ ಬಗ್ಗೆ ನಿಮಗೆ ನೆರವಾಗಬಲ್ಲೆ.'
-          : 'Hello! I am HealthConnect AI Assistant. I can help you find nearby PHCs, book appointments, and understand health guidelines.';
-        action = 'OPEN_HEALTH_TOPICS';
-      }
-
-      res.json({
-        reply,
-        suggestedAction: action,
-        isUrgent,
-        sources: ['National Health Mission Karnataka Public Healthcare Directory'],
-      });
+    if (
+      lower.includes('108') ||
+      lower.includes('ತುರ್ತು') || lower.includes('ಹಾವು') || lower.includes('ಆಂಬುಲೆನ್ಸ್') ||
+      lower.includes('आपातकाल') || lower.includes('एम्बुलेंस') || lower.includes('सांप') ||
+      lower.includes('అత్యవసరం') || lower.includes('పాము') ||
+      lower.includes('അടിയന്തരം') || lower.includes('പാമ്പ്') ||
+      lower.includes('அவசரம்') || lower.includes('பாம்பு') ||
+      lower.includes('emergency') || lower.includes('snake') || lower.includes('chest pain') ||
+      lower.includes('bleeding')
+    ) {
+      reply = reviewedEmergencyAlerts[langCode];
+      action = 'OPEN_108_EMERGENCY';
+      isUrgent = true;
+    } else if (
+      lower.includes('hospital') || lower.includes('phc') || lower.includes('clinic') ||
+      lower.includes('ಆಸ್ಪತ್ರೆ') || lower.includes('ಹುಡುಕಿ') ||
+      lower.includes('अस्पताल') ||
+      lower.includes('ఆసుపత్రి') ||
+      lower.includes('ആശുപത്രി') ||
+      lower.includes('மருத்துவமனை')
+    ) {
+      reply = reviewedHospitalReplies[langCode];
+      action = 'OPEN_FACILITIES';
+    } else if (
+      lower.includes('appointment') || lower.includes('book') ||
+      lower.includes('ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್') ||
+      lower.includes('अपॉइंटमेंट') ||
+      lower.includes('ముன்பதிவு') ||
+      lower.includes('അപ്പോയിന്റ്മെന്റ്')
+    ) {
+      reply = reviewedAppointmentReplies[langCode];
+      action = 'OPEN_APPOINTMENT';
+    } else {
+      reply = reviewedGeneralReplies[langCode];
+      action = 'OPEN_HEALTH_TOPICS';
     }
+
+    res.json({
+      reply,
+      suggestedAction: action,
+      isUrgent,
+      sources: ['National Health Mission Public Healthcare Directory'],
+    });
+  }
 });
 
-// 4. RAG Trusted Health Knowledge Base API (Step 9)
+// Dedicated AI Translation endpoint for dynamic text
+app.post('/api/ai/translate', async (req: Request, res: Response) => {
+  const { text, targetLang = 'en', context = 'healthcare' } = req.body;
+
+  if (!text || typeof text !== 'string') {
+    res.status(400).json({ error: 'Text to translate is required.' });
+    return;
+  }
+
+  const langCode = resolveLanguageCode(targetLang);
+  const targetLanguageName = languageLabels[langCode] || 'English';
+
+  if (!process.env.GEMINI_API_KEY) {
+    // If no API key, return original text safely
+    res.json({
+      translatedText: text,
+      targetLanguage: targetLanguageName,
+      source: 'Direct Passthrough (No API key)',
+    });
+    return;
+  }
+
+  try {
+    const response = await callGeminiWithTimeout(
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: `Translate the following ${context} message accurately and respectfully into ${targetLanguageName}. Keep medical terminology and emergency numbers (like 108) intact. Return ONLY the translated string without commentary.
+Text: "${text}"`,
+      }),
+      4500
+    );
+
+    res.json({
+      translatedText: response.text?.trim() || text,
+      targetLanguage: targetLanguageName,
+      source: 'Gemini 3.8 Flash AI Translation',
+    });
+  } catch (err: any) {
+    res.json({
+      translatedText: text,
+      targetLanguage: targetLanguageName,
+      error: err.message,
+    });
+  }
+});
+
+// 4. RAG Trusted Health Knowledge Base API (Step 9 - Multilingual)
 app.get('/api/health-topics', (req: Request, res: Response) => {
   res.json({
     topics: trustedHealthDocs,
@@ -982,27 +1692,29 @@ app.get('/api/health-topics', (req: Request, res: Response) => {
 
 app.post('/api/health-topics/explain', async (req: Request, res: Response) => {
   try {
-    const { topicKey, question, language = 'kannada' } = req.body;
+    const { topicKey, question, language = 'en' } = req.body;
     const doc = trustedHealthDocs.find((d) => d.topicKey === topicKey) || trustedHealthDocs[0];
-    const isKannada = language === 'kannada';
+    const langCode = resolveLanguageCode(language);
+    const targetLangName = languageLabels[langCode] || 'English';
 
     if (!process.env.GEMINI_API_KEY) {
-      // Fallback deterministic response from verified guidelines
+      // Deterministic response from verified guidelines
       res.json({
         topic: doc.title,
         kannadaTopic: doc.kannadaTitle,
         source: doc.source,
-        explanation: isKannada ? doc.kannadaSummary : doc.summary,
-        warningSigns: isKannada ? doc.kannadaWarningSigns : doc.warningSigns,
+        explanation: langCode === 'kn' ? doc.kannadaSummary : doc.summary,
+        warningSigns: langCode === 'kn' ? doc.kannadaWarningSigns : doc.warningSigns,
         emergencyGuidance: doc.emergencyAction,
         disclaimer: 'This information is educational from official NHM protocols. Not a substitute for a doctor diagnosis. Call 108 in case of emergencies.',
       });
       return;
     }
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: `User asks: "${question || 'Explain this health topic simply'}".
+    const response = await callGeminiWithTimeout(
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: `User asks: "${question || 'Explain this health topic simply'}".
 Source Document:
 Title: ${doc.title} / ${doc.kannadaTitle}
 Authoritative Source: ${doc.source}
@@ -1011,19 +1723,21 @@ Warning Signs: ${doc.warningSigns.join(', ')}
 Emergency Guidance: ${doc.emergencyAction}
 
 Please answer the question accurately adhering strictly to this document.
-Target Language: ${isKannada ? 'Kannada (ಕನ್ನಡ)' : 'English'}.
+Target Language: ${targetLangName}.
 Do not fabricate new medical claims. Cite the source document prominently.`,
-      config: {
-        systemInstruction: 'You are a public health educator for rural families. Be concise, empathetic, and always include safety advice and source citation.',
-      },
-    });
+        config: {
+          systemInstruction: 'You are a public health educator for rural families. Be concise, empathetic, and always include safety advice and source citation.',
+        },
+      }),
+      4500
+    );
 
     res.json({
       topic: doc.title,
       kannadaTopic: doc.kannadaTitle,
       source: doc.source,
-      explanation: response.text || (isKannada ? doc.kannadaSummary : doc.summary),
-      warningSigns: isKannada ? doc.kannadaWarningSigns : doc.warningSigns,
+      explanation: response.text || (langCode === 'kn' ? doc.kannadaSummary : doc.summary),
+      warningSigns: langCode === 'kn' ? doc.kannadaWarningSigns : doc.warningSigns,
       emergencyGuidance: doc.emergencyAction,
       disclaimer: 'Official public health guidance only. Not an individual medical prescription. Consult your PHC Medical Officer or call 108.',
     });

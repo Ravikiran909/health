@@ -29,7 +29,7 @@ interface AshaDashboardProps {
 }
 
 export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefreshSync }) => {
-  const { language } = useLanguage();
+  const { language, t } = useLanguage();
   const { currentUser } = useAuth();
   const { sendPushNotification, sendFcmAshaTaskAlert } = useNotifications();
 
@@ -282,22 +282,16 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
         <div>
           <div className="flex items-center gap-2 text-teal-400 font-bold text-xs uppercase tracking-wider mb-2">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>
-              {language === 'kn'
-                ? 'ಆಶಾ ಸಾಥಿ ಸಮುದಾಯ ಆರೋಗ್ಯ ಪೋರ್ಟಲ್'
-                : 'ASHA Saathi Community Health Hub'}
-            </span>
+            <span>{t('asha_portal_title')}</span>
             <span className="bg-teal-950 px-2 py-0.5 rounded text-[10px] text-teal-300 border border-teal-800">
               ID: KA-ASHA-042
             </span>
           </div>
           <h2 className="text-2xl sm:text-3xl font-black text-white">
-            {language === 'kn' ? 'ಆಶಾ ಸಾಥಿ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್' : 'ASHA Saathi Worker Portal'}
+            {t('card_asha_title')}
           </h2>
           <p className="text-slate-300 text-sm mt-1.5 max-w-2xl leading-relaxed">
-            {language === 'kn'
-              ? 'ಗ್ರಾಮದ ಗರ್ಭಿಣಿಯರ ಆರೈಕೆ, ಲಸಿಕಾ ವೇಳಾಪಟ್ಟಿ, ಅಪಾಯಕಾರಿ ಪ್ರಕರಣಗಳ ಮುನ್ನೆಚ್ಚರಿಕೆ ಮತ್ತು ಆಸ್ಪತ್ರೆ ರೆಫರಲ್ ನಿರ್ವಹಣೆ.'
-              : 'Empowering authorized community health workers to track maternal stages, high-risk flags, send reminders, and create verified hospital referral slips.'}
+            {t('asha_portal_desc')}
           </p>
         </div>
 
@@ -307,7 +301,7 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
             className="px-4 py-2.5 rounded-2xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold text-xs shadow-md transition active:scale-95 flex items-center gap-1.5 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>{language === 'kn' ? 'ಹೊಸ ರೋಗಿ ನೋಂದಣಿ (ಸಮ್ಮತಿ)' : 'Register Patient (Consent)'}</span>
+            <span>{t('quick_patient_reg')}</span>
           </button>
 
           <button
@@ -315,7 +309,7 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
             className="px-4 py-2.5 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md shadow-rose-900/30 transition active:scale-95 flex items-center gap-1.5 cursor-pointer"
           >
             <ArrowUpRight className="w-4 h-4" />
-            <span>{language === 'kn' ? 'ರೆಫರಲ್ ಸ್ಲಿಪ್ ರಚಿಸಿ' : 'Generate Referral Slip'}</span>
+            <span>Generate Referral</span>
           </button>
         </div>
       </div>
@@ -325,10 +319,7 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
         <span className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-teal-400 shrink-0" />
           <span>
-            <strong>{language === 'kn' ? 'ಗೌಪ್ಯತೆ ರಕ್ಷಣೆ:' : 'Ethical Data Notice:'}</strong>{' '}
-            {language === 'kn'
-              ? 'ಡೆಮೊದಲ್ಲಿ ಪ್ರದರ್ಶಿಸಲಾದ ರೋಗಿಗಳ ವಿವರಗಳು ಸಾಂಕೇತಿಕ (Synthetic). ಯಾವುದೇ ನೈಜ ವೈಯಕ್ತಿಕ ವಿವರಗಳು ಬಹಿರಂಗವಾಗಿಲ್ಲ.'
-              : 'Displayed patient records are synthetic demonstration data for hackathon evaluation with explicit consent protocol simulation.'}
+            <strong>Ethical Data Notice:</strong> Displayed patient records are verified synthetic demonstration data for hackathon evaluation with explicit consent protocol simulation.
           </span>
         </span>
         <button
@@ -336,7 +327,7 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
           className="text-teal-400 hover:text-teal-300 flex items-center gap-1 font-bold shrink-0 ml-3 cursor-pointer"
         >
           <RefreshCw className="w-3 h-3" />
-          <span>{language === 'kn' ? 'ನವೀಕರಿಸಿ' : 'Refresh'}</span>
+          <span>{t('refresh_location')}</span>
         </button>
       </div>
 
@@ -351,7 +342,7 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
         <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
           <span className="text-[11px] text-slate-400 block font-semibold uppercase">
-            {language === 'kn' ? 'ನೋಂದಾಯಿತ ರೋಗಿಗಳು' : 'Total Registered'}
+            {t('registered_mothers')}
           </span>
           <span className="text-2xl font-black text-white mt-1 block">
             {patients.length}
@@ -363,7 +354,7 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
 
         <div className="bg-slate-900 border border-rose-900/40 p-4 rounded-2xl">
           <span className="text-[11px] text-rose-300 block font-semibold uppercase">
-            {language === 'kn' ? 'ಅಪಾಯಕಾರಿ ಗರ್ಭಾವಸ್ಥೆ' : 'High-Risk Maternal'}
+            {t('high_risk_pregnancies')}
           </span>
           <span className="text-2xl font-black text-rose-400 mt-1 block">
             {highRiskPatients.length}
@@ -375,7 +366,7 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
 
         <div className="bg-slate-900 border border-amber-900/40 p-4 rounded-2xl">
           <span className="text-[11px] text-amber-300 block font-semibold uppercase">
-            {language === 'kn' ? 'ಗರ್ಭಿಣಿಯರ ಆರೈಕೆ (ANC)' : 'Maternal ANC Tracking'}
+            {t('maternal_health_tracker')}
           </span>
           <span className="text-2xl font-black text-amber-400 mt-1 block">
             {maternalPatients.length}
@@ -387,7 +378,7 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
 
         <div className="bg-slate-900 border border-teal-900/40 p-4 rounded-2xl">
           <span className="text-[11px] text-teal-300 block font-semibold uppercase">
-            {language === 'kn' ? 'ಆಸ್ಪತ್ರೆ ರೆಫರಲ್‌ಗಳು' : 'Active Referrals'}
+            {t('active_referrals')}
           </span>
           <span className="text-2xl font-black text-teal-400 mt-1 block">
             {referrals.length}
@@ -401,9 +392,9 @@ export const AshaDashboard: React.FC<AshaDashboardProps> = ({ isOnline, onRefres
       {/* Tabs */}
       <div className="flex border-b border-slate-800 space-x-2 sm:space-x-4">
         {[
-          { id: 'maternal', label: language === 'kn' ? '🤰 ಗರ್ಭಿಣಿಯರ ಆರೈಕೆ (ANC)' : '🤰 Maternal Tracking' },
-          { id: 'patients', label: language === 'kn' ? '👥 ರೋಗಿಗಳ ಪಟ್ಟಿ & ಸಮ್ಮತಿ' : '👥 Patient Registry' },
-          { id: 'referrals', label: language === 'kn' ? '🏥 ರೆಫರಲ್ ಟ್ರ್ಯಾಕಿಂಗ್' : '🏥 Hospital Referrals' },
+          { id: 'maternal', label: `🤰 ${t('maternal_health_tracker')}` },
+          { id: 'patients', label: `👥 ${t('registered_mothers')}` },
+          { id: 'referrals', label: `🏥 ${t('active_referrals')}` },
         ].map((tab) => (
           <button
             key={tab.id}

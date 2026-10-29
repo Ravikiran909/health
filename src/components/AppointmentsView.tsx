@@ -31,7 +31,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   onRefreshSync,
   preselectedFacility,
 }) => {
-  const { language } = useLanguage();
+  const { language, t } = useLanguage();
   const { currentUser, isAsha } = useAuth();
   const { sendPushNotification, sendFcmAppointmentReminder, sendFcmAshaTaskAlert } = useNotifications();
 
@@ -210,17 +210,13 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
         <div>
           <div className="flex items-center gap-2 text-teal-400 font-bold text-xs uppercase tracking-wider mb-2">
             <Calendar className="w-4 h-4" />
-            <span>
-              {language === 'kn' ? 'ಆಸ್ಪತ್ರೆ ಸರತಿ ಮುಕ್ತ ಪ್ರವೇಶ' : 'Queue-Free Healthcare Access'}
-            </span>
+            <span>{t('card_book_badge')}</span>
           </div>
           <h2 className="text-2xl sm:text-3xl font-black text-white">
-            {language === 'kn' ? 'ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್ & ಭೇಟಿ ನಿರ್ವಹಣೆ' : 'Appointment Requests & Tracking'}
+            {t('appointments_title')}
           </h2>
           <p className="text-slate-300 text-sm mt-1.5 max-w-2xl leading-relaxed">
-            {language === 'kn'
-              ? 'ಪ್ರಾಥಮಿಕ ಅಥವಾ ತಾಲೂಕು ಆಸ್ಪತ್ರೆಗಳಿಗೆ ಭೇಟಿಯ ಸಮಯ ನಿಗದಿಪಡಿಸಿ. ಗರ್ಭಿಣಿಯರ ತಪಾಸಣೆ ಮತ್ತು ಲಸಿಕೆಗೆ ಆದ್ಯತೆ ನೀಡಲಾಗುತ್ತದೆ.'
-              : 'Submit appointment requests for prenatal checkups, immunization, or general OPD. Push notifications alert you when slots are reviewed.'}
+            {t('appointments_desc')}
           </p>
         </div>
 
@@ -229,7 +225,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
           className="px-5 py-3 rounded-2xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-black text-sm shadow-xl shadow-teal-500/20 transition active:scale-95 flex items-center gap-2 cursor-pointer shrink-0"
         >
           <Plus className="w-5 h-5" />
-          <span>{language === 'kn' ? 'ಹೊಸ ಭೇಟಿ ನಿಗದಿಪಡಿಸಿ' : 'New Appointment Request'}</span>
+          <span>{t('request_new_appointment')}</span>
         </button>
       </div>
 
@@ -363,7 +359,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
               <div className="flex items-center gap-2.5">
                 <Calendar className="w-5 h-5 text-teal-400" />
                 <h3 className="font-extrabold text-base sm:text-lg">
-                  {language === 'kn' ? 'ಆಸ್ಪತ್ರೆ ಭೇಟಿ ಅಪಾಯಿಂಟ್‌ಮೆಂಟ್ ವಿನಂತಿ' : 'Healthcare Checkup Request'}
+                  {t('request_new_appointment')}
                 </h3>
               </div>
               <button
@@ -378,7 +374,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
               {/* Facility Selection */}
               <div>
                 <label className="block text-slate-300 font-bold mb-1">
-                  {language === 'kn' ? 'ಆರೋಗ್ಯ ಸೌಲಭ್ಯ ಆಯ್ಕೆ ಮಾಡಿ:' : 'Target Facility:'}
+                  {t('facility_label')}:
                 </label>
                 <select
                   value={selectedFacilityId}
@@ -397,7 +393,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-300 font-bold mb-1">
-                    {language === 'kn' ? 'ರೋಗಿಯ ಹೆಸರು:' : 'Patient Full Name:'}
+                    {t('patient_name')}:
                   </label>
                   <input
                     type="text"
@@ -410,7 +406,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
 
                 <div>
                   <label className="block text-slate-300 font-bold mb-1">
-                    {language === 'kn' ? 'ಮೊಬೈಲ್ ಸಂಖ್ಯೆ:' : 'Contact Mobile No:'}
+                    {t('phone_number')}:
                   </label>
                   <input
                     type="tel"
@@ -425,7 +421,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
               {/* Department */}
               <div>
                 <label className="block text-slate-300 font-bold mb-1">
-                  {language === 'kn' ? 'ವಿಭಾಗ / ತಪಾಸಣಾ ಪ್ರಕಾರ:' : 'Healthcare Department:'}
+                  {t('department_label')}:
                 </label>
                 <select
                   value={department}

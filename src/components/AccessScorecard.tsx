@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useLanguage } from '../context/LanguageContext';
-import { UsabilityComparison, UsabilityRun, UsabilityTask } from '../types';
+import { UsabilityComparison, UsabilityRun, UsabilityTask, Language, SUPPORTED_LANGUAGES } from '../types';
 import {
   Trophy,
   Play,
@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 
 export const AccessScorecard: React.FC = () => {
-  const { language } = useLanguage();
+  const { language, t } = useLanguage();
   const [tasks, setTasks] = useState<UsabilityTask[]>([]);
   const [benchmarks, setBenchmarks] = useState<UsabilityComparison | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -28,7 +28,7 @@ export const AccessScorecard: React.FC = () => {
   // Active benchmark test runner state
   const [selectedTaskId, setSelectedTaskId] = useState<string>('TASK_FIND_PHC');
   const [testMode, setTestMode] = useState<'voice' | 'standard_gui'>('voice');
-  const [testLanguage, setTestLanguage] = useState<'kannada' | 'english'>('kannada');
+  const [testLanguage, setTestLanguage] = useState<Language>(language);
   const [isTestRunning, setIsTestRunning] = useState(false);
   const [timerSeconds, setTimerSeconds] = useState(0);
   const [assistanceCount, setAssistanceCount] = useState(0);
@@ -369,31 +369,23 @@ export const AccessScorecard: React.FC = () => {
 
           <div>
             <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
-              Participant Language:
+              Participant Language (6 Indian Languages):
             </label>
-            <div className="flex gap-2">
-              <button
-                disabled={isTestRunning}
-                onClick={() => setTestLanguage('kannada')}
-                className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold border transition ${
-                  testLanguage === 'kannada'
-                    ? 'bg-teal-500 text-slate-950 border-teal-400 font-extrabold'
-                    : 'bg-slate-800 text-slate-300 border-slate-700'
-                }`}
-              >
-                ಕನ್ನಡ (Kannada)
-              </button>
-              <button
-                disabled={isTestRunning}
-                onClick={() => setTestLanguage('english')}
-                className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold border transition ${
-                  testLanguage === 'english'
-                    ? 'bg-teal-500 text-slate-950 border-teal-400 font-extrabold'
-                    : 'bg-slate-800 text-slate-300 border-slate-700'
-                }`}
-              >
-                English
-              </button>
+            <div className="flex flex-wrap gap-1.5">
+              {SUPPORTED_LANGUAGES.map((l) => (
+                <button
+                  key={l.code}
+                  disabled={isTestRunning}
+                  onClick={() => setTestLanguage(l.code)}
+                  className={`py-1.5 px-2.5 rounded-xl text-xs font-bold border transition ${
+                    testLanguage === l.code
+                      ? 'bg-teal-500 text-slate-950 border-teal-400 font-extrabold shadow-sm'
+                      : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-750'
+                  }`}
+                >
+                  {l.name}
+                </button>
+              ))}
             </div>
           </div>
         </div>

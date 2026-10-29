@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 export const HealthExplainer: React.FC = () => {
-  const { language, speechEnabled } = useLanguage();
+  const { language, speechEnabled, speechRate, t } = useLanguage();
   const [topics, setTopics] = useState<HealthTopicDoc[]>([]);
   const [selectedTopic, setSelectedTopic] = useState<HealthTopicDoc | null>(null);
   const [userQuestion, setUserQuestion] = useState('');
@@ -57,7 +57,7 @@ export const HealthExplainer: React.FC = () => {
         body: JSON.stringify({
           topicKey: selectedTopic.topicKey,
           question: userQuestion,
-          language: language === 'kn' ? 'kannada' : 'english',
+          language: language,
         }),
       });
 
@@ -68,7 +68,7 @@ export const HealthExplainer: React.FC = () => {
 
         if (speechEnabled && data.explanation) {
           setIsSpeaking(true);
-          speakText(data.explanation, language, () => setIsSpeaking(false));
+          speakText(data.explanation, language, speechRate, () => setIsSpeaking(false));
         }
       }
     } catch {
@@ -88,7 +88,7 @@ export const HealthExplainer: React.FC = () => {
       setIsSpeaking(false);
     } else {
       setIsSpeaking(true);
-      speakText(text, language, () => setIsSpeaking(false));
+      speakText(text, language, speechRate, () => setIsSpeaking(false));
     }
   };
 
@@ -99,44 +99,36 @@ export const HealthExplainer: React.FC = () => {
         <div className="max-w-3xl">
           <div className="flex items-center gap-2 text-teal-400 font-bold text-xs uppercase tracking-wider mb-2">
             <BookOpen className="w-4 h-4" />
-            <span>
-              {language === 'kn'
-                ? 'ವಿಶ್ವಾಸಾರ್ಹ ಸಾರ್ವಜನಿಕ ಆರೋಗ್ಯ ಶಿಕ್ಷಣ (RAG Knowledge Base)'
-                : 'Trusted Public Health Education (RAG)'}
-            </span>
+            <span>{t('health_info_subtitle')} (RAG)</span>
           </div>
           <h2 className="text-2xl sm:text-3xl font-black text-white">
-            {language === 'kn'
-              ? 'ಸರ್ಕಾರಿ ಮಾರ್ಗಸೂಚಿ ಆಧಾರಿತ ಆರೋಗ್ಯ ಮಾಹಿತಿ'
-              : 'Verified Clinical Health Guidance'}
+            {t('health_info_title')}
           </h2>
           <p className="text-slate-300 text-sm mt-1.5 leading-relaxed">
-            {language === 'kn'
-              ? 'ಕರ್ನಾಟಕ ಆರೋಗ್ಯ ಇಲಾಖೆ ಹಾಗೂ ರಾಷ್ಟ್ರೀಯ ಆರೋಗ್ಯ ಅಭಿಯಾನದ (NHM) ಅಧಿಕೃತ ಶಿಷ್ಟಾಚಾರಗಳು. ಪ್ರತಿ ಉತ್ತರಕ್ಕೂ ಅಧಿಕೃತ ದಾಖಲೆಯ ಉಲ್ಲೇಖ ನೀಡಲಾಗುತ್ತದೆ.'
-              : 'Official guidelines from National Health Mission (NHM) Karnataka. Grounded answers with verified document citations. Never dispenses unauthorized prescriptions.'}
+            {t('health_info_desc')}
           </p>
         </div>
 
         {/* Topics Selector Pills */}
         <div className="mt-6 flex flex-wrap gap-2">
-          {topics.map((t) => (
+          {topics.map((tItem) => (
             <button
-              key={t.id}
+              key={tItem.id}
               onClick={() => {
                 stopSpeaking();
                 setIsSpeaking(false);
-                setSelectedTopic(t);
+                setSelectedTopic(tItem);
                 setAiAnswer(null);
                 setUserQuestion('');
               }}
               className={`px-3.5 py-2 rounded-2xl text-xs sm:text-sm font-bold transition flex items-center gap-2 cursor-pointer ${
-                selectedTopic?.id === t.id
+                selectedTopic?.id === tItem.id
                   ? 'bg-teal-500 text-slate-950 shadow-md shadow-teal-500/20'
                   : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700 border border-slate-700'
               }`}
             >
               <FileCheck className="w-3.5 h-3.5" />
-              <span>{language === 'kn' ? t.kannadaTitle : t.title}</span>
+              <span>{language === 'kn' ? tItem.kannadaTitle : tItem.title}</span>
             </button>
           ))}
         </div>
@@ -152,7 +144,7 @@ export const HealthExplainer: React.FC = () => {
                   {language === 'kn' ? selectedTopic.kannadaTitle : selectedTopic.title}
                 </h3>
                 <span className="text-xs text-teal-400 font-semibold block mt-1">
-                  {language === 'kn' ? 'ಅಧಿಕೃತ ಮೂಲ: ' : 'Authoritative Source: '}{selectedTopic.source}
+                  {t('verified_source')}: {selectedTopic.source}
                 </span>
               </div>
 
@@ -178,7 +170,7 @@ export const HealthExplainer: React.FC = () => {
             {/* Core Summary */}
             <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 text-slate-200 leading-relaxed text-sm sm:text-base">
               <span className="text-[11px] font-bold text-teal-400 uppercase tracking-wider block mb-1">
-                {language === 'kn' ? 'ಮುಖ್ಯ ಮಾರ್ಗದರ್ಶಿ ವಿವರಗಳು:' : 'Official Health Protocol:'}
+                {t('key_recommendations')}:
               </span>
               <p>
                 {language === 'kn' ? selectedTopic.kannadaSummary : selectedTopic.summary}
@@ -189,7 +181,7 @@ export const HealthExplainer: React.FC = () => {
             <div className="p-4 rounded-2xl bg-amber-950/40 border border-amber-800/40 space-y-2">
               <h4 className="font-extrabold text-amber-300 text-xs sm:text-sm flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-400" />
-                {language === 'kn' ? 'ಗಮನಿಸಬೇಕಾದ ಅಪಾಯಕಾರಿ ಲಕ್ಷಣಗಳು:' : 'Clinical Danger Warning Signs:'}
+                {t('warning_signs')}:
               </h4>
               <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-300">
                 {(language === 'kn'
@@ -209,7 +201,7 @@ export const HealthExplainer: React.FC = () => {
               <HeartPulse className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
               <div>
                 <strong className="block text-rose-300">
-                  {language === 'kn' ? 'ತುರ್ತು ಕ್ರಮ:' : 'Emergency Action Plan:'}
+                  {language === 'kn' ? 'ತುರ್ತು ಕ್ರಮ (108):' : 'Emergency Action Plan (108):'}
                 </strong>
                 <span>{selectedTopic.emergencyAction}</span>
               </div>
